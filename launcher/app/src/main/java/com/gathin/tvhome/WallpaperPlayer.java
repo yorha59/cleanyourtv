@@ -66,7 +66,9 @@ final class WallpaperPlayer {
         this.root = root;
         backgroundColor = config.backgroundColor;
         files = new ArrayList<>(config.wallpapers);
-        interval = config.wallpaperRotationMinutes * 60_000L;
+        interval = config.wallpaperRotationSeconds > 0
+                ? config.wallpaperRotationSeconds * 1000L
+                : config.wallpaperRotationMinutes * 60_000L;
         bitmapConfig = config.wallpaperTrueColor ? Bitmap.Config.ARGB_8888 : Bitmap.Config.RGB_565;
         // The dim is painted into the picture (decode), so no full-screen shade layer is drawn on every frame.
         dimColor = config.wallpaperDim > 0 ? (config.wallpaperDim * 255 / 100) << 24 : 0;
@@ -131,11 +133,26 @@ final class WallpaperPlayer {
     void start() {
         active = true;
         update();
+        // Sub-minute rotations: the caller's minute tick is too slow for a seconds-level
+        // interval, so this player re-checks itself at its own cadence. update() is guarded
+        // by WallpaperRotation.due(), so extra calls never advance the picture early.
+        if (interval > 0 && interval < 60_000L) root.postDelayed(rotationTick, interval);
     }
 
     void stop() {
         active = false;
+        root.removeCallbacks(rotationTick);
     }
+
+    /** Self-scheduling tick for sub-minute wallpaper rotation; stops with [stop]/[close]. */
+    private final Runnable rotationTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!active || closed) return;
+            update();
+            root.postDelayed(this, interval);
+        }
+    };
 
     /** Drops the wallpaper texture when Home is hidden and Android asks the process to free memory. */
     void releaseForMemoryPressure() {
@@ -162,6 +179,7 @@ final class WallpaperPlayer {
     void close() {
         active = false;
         closed = true;
+        root.removeCallbacks(rotationTick);
         decoder.shutdownNow();
     }
 
