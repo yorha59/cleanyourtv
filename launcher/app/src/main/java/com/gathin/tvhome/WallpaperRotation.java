@@ -21,6 +21,10 @@ final class WallpaperRotation {
     }
 
     static List<File> images(File directory) {
+        synchronized (WallpaperBatchManager.CACHE_LOCK) { return imagesLocked(directory); }
+    }
+
+    private static List<File> imagesLocked(File directory) {
         List<File> result = new ArrayList<>();
         File[] entries = directory == null ? null : directory.listFiles();
         if (entries == null) return result;

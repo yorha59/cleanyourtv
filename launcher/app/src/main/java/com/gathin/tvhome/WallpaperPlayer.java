@@ -32,6 +32,8 @@ import java.util.concurrent.Executors;
 
 /** Displays and rotates a theme's local wallpaper images while Home is visible. */
 final class WallpaperPlayer {
+    private final Context context;
+    private long batchGeneration;
     private final FrameLayout root;
     private final ImageView image;
     private final int backgroundColor;
@@ -65,6 +67,9 @@ final class WallpaperPlayer {
     private int[] sun;
 
     WallpaperPlayer(Context context, FrameLayout root, Config config) {
+        this.context = context;
+        WallpaperBatchManager.start(context, config);
+        batchGeneration = WallpaperBatchManager.generation;
         this.root = root;
         backgroundColor = config.backgroundColor;
         files = new ArrayList<>(config.wallpapers);
@@ -185,7 +190,26 @@ final class WallpaperPlayer {
         decoder.shutdownNow();
     }
 
+    private void reloadBatch() {
+        synchronized (WallpaperBatchManager.CACHE_LOCK) {
+            if (batchGeneration == WallpaperBatchManager.generation) return;
+            Config latest = Config.load(context);
+            files.clear();
+            files.addAll(latest.wallpapers);
+            shuffleBag.clear();
+            displayed = "";
+            preferences.edit().putString("collection", collectionKey(files))
+                    .remove("image").remove("changed").apply();
+            batchGeneration = WallpaperBatchManager.generation;
+            if (latest.wallpaperEnabled && !files.isEmpty() && image.getParent() == null) {
+                root.addView(image, 0, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+        }
+    }
+
     void update() {
+        reloadBatch();
         if (!active || closed || loading || files.isEmpty()) return;
         String previous = preferences.getString("image", "");
         // A picture outside the time of day's group (the group changed) is replaced at once, not after the interval.
@@ -199,12 +223,13 @@ final class WallpaperPlayer {
         }
         if (selected == null || selected.getName().equals(displayed)) return;
         File next = selected;
+        long requestedGeneration = batchGeneration;
         loading = true;
         decoder.execute(() -> {
             Bitmap bitmap = decode(next);
             root.post(() -> {
                 loading = false;
-                if (closed || !active) {
+                if (closed || !active || requestedGeneration != WallpaperBatchManager.generation) {
                     if (bitmap != null) bitmap.recycle();
                     return;
                 }
@@ -292,6 +317,10 @@ final class WallpaperPlayer {
     }
 
     private Bitmap decode(File file) {
+        synchronized (WallpaperBatchManager.CACHE_LOCK) { return decodeLocked(file); }
+    }
+
+    private Bitmap decodeLocked(File file) {
         try {
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inJustDecodeBounds = true;
