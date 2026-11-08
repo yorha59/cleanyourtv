@@ -20,6 +20,7 @@ import java.io.File;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -40,6 +41,7 @@ final class WallpaperPlayer {
     private final SharedPreferences preferences;
     private final ExecutorService decoder = Executors.newSingleThreadExecutor();
     private final Random random = new Random();
+    private final ArrayDeque<String> shuffleBag = new ArrayDeque<>();
     private final int width;
     /** config wallpaper_true_color: ARGB_8888 instead of RGB_565. */
     private final Bitmap.Config bitmapConfig;
@@ -191,7 +193,9 @@ final class WallpaperPlayer {
         File selected = WallpaperRotation.find(playable, previous);
         long changed = preferences.getLong("changed", 0);
         if (selected == null || WallpaperRotation.due(changed, System.currentTimeMillis(), interval)) {
-            selected = WallpaperRotation.pick(playable, previous, order, random);
+            selected = WallpaperRotation.ORDER_SHUFFLE.equals(order)
+                    ? WallpaperRotation.nextFromBag(shuffleBag, playable, displayed, random)
+                    : WallpaperRotation.pick(playable, previous, order, random);
         }
         if (selected == null || selected.getName().equals(displayed)) return;
         File next = selected;

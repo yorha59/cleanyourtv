@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Random;
@@ -60,6 +62,23 @@ final class WallpaperRotation {
         List<File> candidates = new ArrayList<>(images);
         if (candidates.size() > 1) candidates.removeIf(image -> image.getName().equals(previous));
         return candidates.isEmpty() ? null : candidates.get(random.nextInt(candidates.size()));
+    }
+
+    /** Consumes one shuffled round; additions join the next round and removed names are discarded. */
+    static File nextFromBag(Deque<String> bag, List<File> images, String displayed, Random random) {
+        for (Iterator<String> names = bag.iterator(); names.hasNext();) {
+            if (find(images, names.next()) == null) names.remove();
+        }
+        if (bag.isEmpty()) {
+            List<String> names = new ArrayList<>();
+            for (File image : images) names.add(image.getName());
+            Collections.shuffle(names, random);
+            if (names.size() > 1 && names.get(0).equals(displayed)) {
+                Collections.swap(names, 0, names.size() - 1);
+            }
+            bag.addAll(names);
+        }
+        return bag.isEmpty() ? null : find(images, bag.removeFirst());
     }
 
     /**
