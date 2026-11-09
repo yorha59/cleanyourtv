@@ -33,6 +33,7 @@ import java.util.concurrent.Executors;
 /** Displays and rotates a theme's local wallpaper images while Home is visible. */
 final class WallpaperPlayer {
     private final Context context;
+    private final Config syncConfig;
     private long batchGeneration;
     private final FrameLayout root;
     private final ImageView image;
@@ -68,6 +69,7 @@ final class WallpaperPlayer {
 
     WallpaperPlayer(Context context, FrameLayout root, Config config) {
         this.context = context;
+        syncConfig = config;
         WallpaperBatchManager.start(context, config);
         batchGeneration = WallpaperBatchManager.generation;
         this.root = root;
@@ -139,6 +141,8 @@ final class WallpaperPlayer {
 
     void start() {
         active = true;
+        root.removeCallbacks(syncTick);
+        syncTick.run();
         update();
         // Sub-minute rotations: the caller's minute tick is too slow for a seconds-level
         // interval, so this player re-checks itself at its own cadence. update() is guarded
@@ -149,6 +153,39 @@ final class WallpaperPlayer {
     void stop() {
         active = false;
         root.removeCallbacks(rotationTick);
+        root.removeCallbacks(syncTick);
+    }
+
+    /** Check the persisted sync deadline while Home is visible; networking stays on its worker. */
+    private final Runnable syncTick = new Runnable() {
+        @Override public void run() {
+            if (!active || closed) return;
+            WallpaperSync.start(context, syncConfig, new Runnable() {
+                @Override public void run() {
+                    // Config.load reuses WallpaperRotation.images and respects the user's wallpaper choice.
+                    final Config latest = Config.load(context);
+                    root.post(new Runnable() {
+                        @Override public void run() {
+                            if (!closed) reload(latest);
+                        }
+                    });
+                }
+            });
+            if (syncConfig.wallpaperSyncUrl != null && syncConfig.wallpaperSyncUrl.length() > 0)
+                root.postDelayed(this, 60000L);
+        }
+    };
+
+    /** Replace the collection in place without resetting timing, the current image or the shuffle bag. */
+    void reload(Config latest) {
+        files.clear();
+        files.addAll(latest.wallpapers);
+        preferences.edit().putString("collection", collectionKey(files)).apply();
+        if (latest.wallpaperEnabled && !files.isEmpty() && image.getParent() == null) {
+            root.addView(image, 0, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        if (active) update();
     }
 
     /** Self-scheduling tick for sub-minute wallpaper rotation; stops with [stop]/[close]. */
@@ -187,6 +224,7 @@ final class WallpaperPlayer {
         active = false;
         closed = true;
         root.removeCallbacks(rotationTick);
+        root.removeCallbacks(syncTick);
         decoder.shutdownNow();
     }
 

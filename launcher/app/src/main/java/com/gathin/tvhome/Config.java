@@ -283,6 +283,9 @@ final class Config {
     /** With single_row, the band runs behind every app in the row, not only the dock apps (config.xml, dock_band_all). */
     final boolean dockBandAll;
 
+    /** Optional HTTP wallpaper pool; null leaves synchronization off. */
+    final String wallpaperSyncUrl;
+    final int wallpaperSyncIntervalHours;
     /** Optional process-only HTTP wallpaper batches; absent JSON keeps networking off. */
     final boolean wallpaperRemoteBatching;
     final int wallpaperBatchSize;
@@ -303,7 +306,10 @@ final class Config {
                    boolean handleViewInputs, boolean tileMenu, boolean dockEvenPadding, boolean dockBand, boolean cinematicDots, boolean cinematicWhiteFocus, boolean wifiStatusColor, int cinematicScrim, int cinematicArt,
                    Map<String, Set<String>> wallpaperMoods, boolean gamepadPassthrough, boolean consumeVolumeKeys, boolean homeIgnoreChannelKeys, boolean powerOnHome, boolean homeLongPressHome, boolean wifiStatusWarnings, List<String> topBarApps, boolean showGreeting, boolean headerWhite, boolean clockWallpaper, int clockWallpaperDim, boolean clockGlow, String glassStyle, boolean singleRow, boolean dockBandAll, boolean lunarDate, int lunarUtcOffset, boolean dateBelowClock, boolean vpnPill, String locale, boolean powerOnHomeAlways, boolean inputsConnectedOnly, boolean inputsCecStateOnly,
                    int openOnStartNetworkWait, boolean openOnStartOnWake, boolean iconOnlyVpn, String clockFormat, boolean backOpensClock, boolean glowSnap,
-                   boolean wallpaperRemoteBatching, int wallpaperBatchSize, int wallpaperBatchIntervalMinutes) {
+                   boolean wallpaperRemoteBatching, int wallpaperBatchSize, int wallpaperBatchIntervalMinutes,
+                   String wallpaperSyncUrl, int wallpaperSyncIntervalHours) {
+        this.wallpaperSyncUrl = wallpaperSyncUrl;
+        this.wallpaperSyncIntervalHours = wallpaperSyncIntervalHours;
         this.wallpaperRemoteBatching = wallpaperRemoteBatching;
         this.wallpaperBatchSize = wallpaperBatchSize;
         this.wallpaperBatchIntervalMinutes = wallpaperBatchIntervalMinutes;
@@ -737,7 +743,9 @@ final class Config {
                 Math.max(0, Math.min(600, openOnStartNetworkWait)), openOnStartOnWake, iconOnlyVpn, clockFormat, backOpensClock, glowSnap,
                 json != null && bool(json, "wallpaper_remote_batching", false),
                 json == null ? 42 : integer(json, "wallpaper_batch_size", 42, 1, 1000),
-                json == null ? 60 : integer(json, "wallpaper_batch_interval_minutes", 60, 1, 10080));
+                json == null ? 60 : integer(json, "wallpaper_batch_interval_minutes", 60, 1, 10080),
+                json == null ? null : string(json, "wallpaper_sync_url", null),
+                json == null ? 24 : integer(json, "wallpaper_sync_interval_hours", 24, 1, Integer.MAX_VALUE));
     }
 
     /**
