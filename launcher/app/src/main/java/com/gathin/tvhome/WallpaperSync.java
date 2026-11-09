@@ -27,6 +27,10 @@ import java.net.URLEncoder;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Date;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.LinkedHashMap;
@@ -95,6 +99,71 @@ final class WallpaperSync {
         return result.toString();
     }
 
+    interface PoolProcessor {
+        void process(String path, long size, File target) throws Exception;
+        void warn(String message);
+    }
+
+    /** Sample candidates outside the installed pool, without replacement; fall back to the
+     *  full key set when everything is already installed (first pool shrink from a full set). */
+    static Set<String> sample(Set<String> keys, Set<String> installed, int size, Random random) {
+        List<String> candidates = new ArrayList<String>(keys);
+        candidates.removeAll(installed);
+        if (candidates.isEmpty()) candidates = new ArrayList<String>(keys);
+        Collections.shuffle(candidates, random);
+        return new LinkedHashSet<String>(candidates.subList(0, Math.min(size, candidates.size())));
+    }
+
+    static Set<String> installedKeys(File directory) {
+        Set<String> keys = new LinkedHashSet<String>();
+        File[] files = directory.listFiles();
+        if (files != null) for (File file : files) {
+            if (file.isFile() && file.getName().matches("[0-9a-f]{16}\\.jpg"))
+                keys.add(file.getName().substring(0, 16));
+        }
+        return keys;
+    }
+
+    static void cleanPool(File directory, Set<String> selected, SharedPreferences state,
+                          PoolProcessor processor) {
+        File[] files = directory.listFiles();
+        if (files == null) return;
+        for (File file : files) {
+            if (!file.isFile() || !file.getName().matches("[0-9a-f]{16}\\.jpg")) continue;
+            if (selected.contains(file.getName().substring(0, 16))) continue;
+            // Read at deletion time: rotation can advance during a long download session.
+            if (file.getName().equals(state.getString("image", ""))) continue;
+            if (!file.delete()) processor.warn("Cannot remove pool wallpaper");
+        }
+    }
+
+    /** Pool sessions never consult or update the legacy processed-key preference. */
+    static boolean syncPool(Map<String, Long> manifest, File directory, int size,
+                            SharedPreferences state, Random random, PoolProcessor processor) {
+        Map<String, String> paths = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, Long> entry : manifest.entrySet())
+            paths.put(key(entry.getKey(), entry.getValue()), entry.getKey());
+        Set<String> selected = sample(paths.keySet(), installedKeys(directory), size, random);
+        boolean pending = false;
+        for (String key : selected) {
+            File target = new File(directory, key + ".jpg");
+            if (target.isFile()) continue;
+            try {
+                String path = paths.get(key);
+                processor.process(path, manifest.get(path), target);
+            } catch (Exception failure) {
+                pending = true;
+                processor.warn("Wallpaper processing failed: " + failure);
+            } catch (OutOfMemoryError failure) {
+                pending = true;
+                processor.warn("Not enough memory for wallpaper");
+            }
+        }
+        // Retain usable old pictures until every selected replacement is installed.
+        if (!pending) cleanPool(directory, selected, state, processor);
+        return pending;
+    }
+
     /** Called at Home start and while visible; duplicate requests share one process-wide guard. */
     static void start(Context context, final Config config, final Runnable completed) {
         debug(context, "start url=" + config.wallpaperSyncUrl);
@@ -102,7 +171,11 @@ final class WallpaperSync {
         final Context app = context.getApplicationContext();
         final SharedPreferences state = app.getSharedPreferences("wallpaper_rotation", Context.MODE_PRIVATE);
         long now = System.currentTimeMillis(), last = state.getLong(LAST_SYNC, 0);
-        if (last > 0 && now >= last && now - last < config.wallpaperSyncIntervalHours * 3600000L) return;
+        File base = Config.dir(app);
+        boolean emptyPool = config.wallpaperPoolSize > 0 && (base == null
+                || installedKeys(new File(base, "wallpapers")).size() < config.wallpaperPoolSize);
+        if (!emptyPool && last > 0 && now >= last
+                && now - last < config.wallpaperSyncIntervalHours * 3600000L) return;
         if (!RUNNING.compareAndSet(false, true)) return;
         try {
             new Thread(new Runnable() {
@@ -110,40 +183,61 @@ final class WallpaperSync {
                     try {
                         File base = Config.dir(app);
                         if (base == null) throw new IOException("External files unavailable");
-                        File directory = new File(base, "wallpapers");
+                        final File directory = new File(base, "wallpapers");
                         String address = config.wallpaperSyncUrl.trim();
                         if (!address.endsWith("/")) address += "/";
                         Map<String, Long> manifest = parseManifest(readManifest(address + "manifest.json"));
                         if (!directory.isDirectory() && !directory.mkdirs()) throw new IOException("Cannot create wallpapers");
-                        Set<String> processed = processedKeys(state.getString(PROCESSED, ""));
-                        int attempted = 0;
-                        boolean pending = false;
-                        for (Map.Entry<String, Long> entry : manifest.entrySet()) {
-                            String key = key(entry.getKey(), entry.getValue());
-                            if (processed.contains(key)) continue;
-                            if (attempted >= SESSION_LIMIT) {
-                                pending = true;
-                                break;
-                            }
-                            attempted++;
-                            File original = null;
-                            try {
-                                original = File.createTempFile("wallpaper-source-", ".tmp", app.getCacheDir());
-                                download(address + URLEncoder.encode(entry.getKey(), "UTF-8"), original, entry.getValue());
-                                compose(original, new File(directory, key + ".jpg"));
-                                processed.add(key);
-                                if (!state.edit().putString(PROCESSED, saveKeys(processed)).commit()) {
-                                    processed.remove(key);
-                                    throw new IOException("Cannot save processed wallpaper");
+                        boolean pending;
+                        if (config.wallpaperPoolSize > 0) {
+                            final String poolAddress = address;
+                            pending = syncPool(manifest, directory, config.wallpaperPoolSize, state,
+                                    new Random(), new PoolProcessor() {
+                                @Override public void process(String path, long size, File target) throws Exception {
+                                    File original = File.createTempFile("wallpaper-source-", ".tmp", app.getCacheDir());
+                                    try {
+                                        download(poolAddress + URLEncoder.encode(path, "UTF-8"), original, size);
+                                        compose(original, target);
+                                    } finally {
+                                        if (original.exists() && !original.delete()) warn("Cannot remove source wallpaper");
+                                    }
                                 }
-                            } catch (Exception failure) {
-                                pending = true;
-                                Log.w(TAG, "Wallpaper processing failed: " + failure.getClass().getSimpleName());
-                            } catch (OutOfMemoryError failure) {
-                                pending = true;
-                                Log.w(TAG, "Not enough memory for wallpaper");
-                            } finally {
-                                if (original != null && original.exists() && !original.delete()) Log.w(TAG, "Cannot remove source wallpaper");
+                                @Override public void warn(String message) {
+                                    Log.w(TAG, message);
+                                    debug(app, message);
+                                }
+                            });
+                        } else {
+                            Set<String> processed = processedKeys(state.getString(PROCESSED, ""));
+                            int attempted = 0;
+                            pending = false;
+                            for (Map.Entry<String, Long> entry : manifest.entrySet()) {
+                                String key = key(entry.getKey(), entry.getValue());
+                                if (processed.contains(key)) continue;
+                                if (attempted >= SESSION_LIMIT) {
+                                    pending = true;
+                                    break;
+                                }
+                                attempted++;
+                                File original = null;
+                                try {
+                                    original = File.createTempFile("wallpaper-source-", ".tmp", app.getCacheDir());
+                                    download(address + URLEncoder.encode(entry.getKey(), "UTF-8"), original, entry.getValue());
+                                    compose(original, new File(directory, key + ".jpg"));
+                                    processed.add(key);
+                                    if (!state.edit().putString(PROCESSED, saveKeys(processed)).commit()) {
+                                        processed.remove(key);
+                                        throw new IOException("Cannot save processed wallpaper");
+                                    }
+                                } catch (Exception failure) {
+                                    pending = true;
+                                    Log.w(TAG, "Wallpaper processing failed: " + failure.getClass().getSimpleName());
+                                } catch (OutOfMemoryError failure) {
+                                    pending = true;
+                                    Log.w(TAG, "Not enough memory for wallpaper");
+                                } finally {
+                                    if (original != null && original.exists() && !original.delete()) Log.w(TAG, "Cannot remove source wallpaper");
+                                }
                             }
                         }
                         // Incomplete sessions continue at the next tick instead of waiting hours.

@@ -286,6 +286,7 @@ final class Config {
     /** Optional HTTP wallpaper pool; null leaves synchronization off. */
     final String wallpaperSyncUrl;
     final int wallpaperSyncIntervalHours;
+    final int wallpaperPoolSize;
     /** Optional process-only HTTP wallpaper batches; absent JSON keeps networking off. */
     final boolean wallpaperRemoteBatching;
     final int wallpaperBatchSize;
@@ -307,7 +308,8 @@ final class Config {
                    Map<String, Set<String>> wallpaperMoods, boolean gamepadPassthrough, boolean consumeVolumeKeys, boolean homeIgnoreChannelKeys, boolean powerOnHome, boolean homeLongPressHome, boolean wifiStatusWarnings, List<String> topBarApps, boolean showGreeting, boolean headerWhite, boolean clockWallpaper, int clockWallpaperDim, boolean clockGlow, String glassStyle, boolean singleRow, boolean dockBandAll, boolean lunarDate, int lunarUtcOffset, boolean dateBelowClock, boolean vpnPill, String locale, boolean powerOnHomeAlways, boolean inputsConnectedOnly, boolean inputsCecStateOnly,
                    int openOnStartNetworkWait, boolean openOnStartOnWake, boolean iconOnlyVpn, String clockFormat, boolean backOpensClock, boolean glowSnap,
                    boolean wallpaperRemoteBatching, int wallpaperBatchSize, int wallpaperBatchIntervalMinutes,
-                   String wallpaperSyncUrl, int wallpaperSyncIntervalHours) {
+                   String wallpaperSyncUrl, int wallpaperSyncIntervalHours, int wallpaperPoolSize) {
+        this.wallpaperPoolSize = wallpaperPoolSize;
         this.wallpaperSyncUrl = wallpaperSyncUrl;
         this.wallpaperSyncIntervalHours = wallpaperSyncIntervalHours;
         this.wallpaperRemoteBatching = wallpaperRemoteBatching;
@@ -745,7 +747,8 @@ final class Config {
                 json == null ? 42 : integer(json, "wallpaper_batch_size", 42, 1, 1000),
                 json == null ? 60 : integer(json, "wallpaper_batch_interval_minutes", 60, 1, 10080),
                 json == null ? null : string(json, "wallpaper_sync_url", null),
-                json == null ? 24 : integer(json, "wallpaper_sync_interval_hours", 24, 1, Integer.MAX_VALUE));
+                json == null ? 24 : integer(json, "wallpaper_sync_interval_hours", 24, 1, Integer.MAX_VALUE),
+                wallpaperPoolSize(json));
     }
 
     /**
@@ -899,6 +902,13 @@ final class Config {
     private static boolean bool(JSONObject o, String key, boolean fallback) {
         Object v = o.opt(key);
         return v instanceof Boolean ? (Boolean) v : fallback;
+    }
+
+    /** Non-positive values preserve the legacy permanent collection. */
+    static int wallpaperPoolSize(JSONObject json) {
+        int size = json == null ? 120 : integer(json, "wallpaper_pool_size", 120,
+                Integer.MIN_VALUE, Integer.MAX_VALUE);
+        return size <= 0 ? size : Math.max(10, Math.min(500, size));
     }
 
     private static int integer(JSONObject o, String key, int fallback, int min, int max) {
